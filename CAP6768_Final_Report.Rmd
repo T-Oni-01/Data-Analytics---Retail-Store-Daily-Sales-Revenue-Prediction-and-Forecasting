@@ -1,0 +1,474 @@
+---
+title: "Retail Store Daily Sales: Revenue Prediction and Forecasting"
+subtitle: "CAP6768 - Data Analytics Final Project"
+author: 
+  - "Taiwo Onitiju, Drake Kayla, Antonenko Vadym, Khatoon Fehmida, Gillen Grace"
+date: "December 7, 2025"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+geometry: margin=1in
+fontsize: 11pt
+header-includes:
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.width = 6, fig.height = 3, fig.align = 'center',
+  out.width = '85%', fig.pos = 'H'
+)
+
+library(ggplot2); library(gridExtra); library(dplyr); library(lubridate)
+library(tidyverse); library(caret); library(ranger); library(pROC)
+library(xgboost); library(forecast); library(prophet); library(knitr)
+library(kableExtra)
+```
+
+```{r load-data, include=FALSE}
+retail <- read.csv("data_analytics_retail.csv") %>%
+  mutate(date = as.Date(date),
+         day_of_week = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", 
+                                    "Thursday", "Friday", "Saturday", "Sunday")),
+         month = factor(month, levels = c("Jun", "Jul", "Aug")),
+         day_type = ifelse(weekend, "Weekend", "Weekday"))
+
+retail_clean <- retail %>%
+  mutate(temperature = ifelse(is.na(temperature), mean(temperature, na.rm = TRUE), temperature))
+
+# Calculate statistics early for use throughout document
+revenue_by_day_type <- retail_clean %>% 
+  group_by(day_type) %>%
+  summarise(Avg_Revenue = mean(daily_revenue), Count = n())
+
+t_test_result <- t.test(
+  retail_clean$daily_revenue[retail_clean$day_type == "Weekday"],
+  retail_clean$daily_revenue[retail_clean$day_type == "Weekend"]
+)
+
+cor_customers <- cor(retail_clean$daily_customers, retail_clean$daily_revenue)
+
+# Promotion analysis
+promo_stats <- retail_clean %>%
+  group_by(promotion) %>%
+  summarise(avg_rev = mean(daily_revenue), n = n())
+promo_lift <- ((promo_stats$avg_rev[2] - promo_stats$avg_rev[1]) / promo_stats$avg_rev[1]) * 100
+```
+
+# Executive Summary
+
+This project analyzes three months of daily sales data (June-August 2025) from a local retail store to predict high-revenue days and forecast future sales. We used classification and time series forecasting techniques to develop models that support strategic business decisions.
+
+**Key Findings:** Weekend revenue averages **$5,069**, compared to **$3,498** on weekdays—a **45% increase**. Customer traffic is the strongest revenue driver (**r = 0.86**). Promotions generate a **`r round(promo_lift, 1)`% revenue lift**, though not statistically significant due to limited sample size (only 13 promotion days). Classification models achieved **82.6% accuracy** in predicting high vs. low revenue days. Time series forecasting using SARIMA achieved an RMSE of **$900** for 7-day predictions.
+
+<!--
+**Key Findings:**
+- Weekend revenue averages **$5,069**, compared to **$3,498** on weekdays—a **45% increase**.  
+- Customer traffic is the strongest revenue driver (**r = 0.86**).  
+- Promotions generate a **`r round(promo_lift, 1)`% revenue lift**, though not statistically significant due to limited sample size (only 13 promotion days).  
+- Classification models achieved **82.6% accuracy** in predicting high vs. low revenue days.  
+- Time series forecasting using SARIMA achieved an RMSE of **$900** for 7-day predictions.
+
+
+**Recommendations:**
+- Increase weekend staffing by **30–40%** and reduce staffing on low-traffic days (especially Monday and Friday).  
+- Focus promotions on underperforming weekdays to balance weekly revenue.  
+- Use SARIMA forecasts to plan weekly inventory and adjust stock levels before weekends.
+-->
+
+**Recommendations:** Increase weekend staffing by **30–40%** and reduce staffing on low-traffic days (especially Monday and Friday).Focus promotions on underperforming weekdays to balance weekly revenue.Use SARIMA forecasts to plan weekly inventory and adjust stock levels before weekends.
+
+
+**Business Impact:** These models enable proactive decision-making for staffing optimization, targeted promotions, and inventory management, with potential annual cost savings of 10-15% through improved operational efficiency.
+
+# Problem Definition and Business Context
+
+The retail store operates in a competitive local market where customer traffic and revenue vary significantly across days of the week. Without a structured analytics approach, management struggles to anticipate high-revenue periods, evaluate promotion effectiveness, and plan inventory and staffing levels efficiently. These uncertainties lead to understaffing during busy periods, overstaffing during slow days, inconsistent promotion results, and potential stockouts or excess inventory.
+
+**Business Problem:**  
+The central challenge is the lack of data-driven insights to support daily operational planning. Management needs to:
+
+1. Identify which days are likely to generate high revenue to optimize staffing levels and avoid service bottlenecks.  
+2. Understand whether promotional campaigns meaningfully increase revenue and determine optimal promotion timing.  
+3. Forecast short-term revenue to support weekly inventory procurement, reduce stockouts, and prevent unnecessary holding costs.
+
+Addressing these needs requires transforming raw daily sales data into actionable insights that directly support labor planning, promotions management, and inventory control.
+
+**Problem Types:**  
+We formulated two complementary analytics problems:
+
+- **Binary Classification:** Predict whether a day will be *high-revenue* or *low-revenue* based on historical patterns. High revenue is defined as revenue above the dataset's median value. This supports proactive staffing decisions and helps identify key revenue drivers like customer traffic, promotions, and weekend effects.  
+
+- **Time Series Forecasting:** Forecast total daily revenue for the next seven days using SARIMA and Prophet models. Accurate short-term forecasts allow the store to align inventory levels with expected demand and plan financially for upcoming weeks.
+
+These analytical components create a unified decision-support system that enhances both operational efficiency (staffing, inventory) and strategic planning (promotions, budgeting).
+
+**Business Context:**  
+The retail environment is characterized by weekly seasonality and strong weekend demand. Staffing shortages during peak days can reduce customer satisfaction, while excess labor on slow days increases costs. Similarly, promotions without data-driven timing may not yield expected revenue lifts, especially when run on low-traffic days. Inventory planning is equally critical, as mismatched stock levels directly affect sales and profitability.
+
+**Expected Business Value:**  
+Implementing this analytical framework should deliver multiple benefits:
+
+- **Staffing Optimization:** Align staff schedules with predicted busy days, reducing labor costs while improving customer experience.  
+- **Promotion Strategy:** Run promotions when they have the highest potential impact, maximizing return on marketing efforts.  
+- **Inventory Efficiency:** Order stock according to forecasted demand, reducing stockouts and minimizing carrying costs.  
+- **Financial Planning:** Provide leadership with reliable short-term revenue expectations for budgeting and cash flow management.  
+
+These improvements support a more agile, data-informed retail operation with measurable cost savings and revenue enhancement opportunities.
+
+# Data Description
+
+**Dataset Overview:**  
+This project uses an instructor-provided retail sales dataset containing daily observations from **June 1 to August 29, 2025**, totaling **90 days**. The dataset includes **11 variables** that capture temporal attributes, customer behavior, sales performance, and environmental conditions.
+
+**Data Structure:**  
+The dataset is structured at the daily level with three major categories:
+
+1. **Temporal Features:**  
+   - *date* – Calendar date  
+   - *day_of_week* – Monday through Sunday  
+   - *weekend* – Weekend indicator  
+   - *week_number* – Week 22 through 35  
+   - *month* – June, July, or August
+
+2. **Customer and Sales Metrics:**  
+   - *daily_customers* – Number of customers per day (50–200)  
+   - *avg_transaction* – Average spending per customer ($25–$45)  
+   - *daily_revenue* – Total revenue for the day ($2,000–$8,000)
+
+3. **External Factors:**  
+   - *temperature* – Daily temperature (75–95°F)  
+   - *promotion* – Whether a promotion was active
+
+**Key Variable Roles:**  
+- **daily_revenue** serves as the primary target for forecasting and the threshold for classifying high vs. low revenue days.  
+- **daily_customers** and **avg_transaction** capture customer behavior and have strong theoretical relationships with revenue.  
+- **weekend** and **day_of_week** capture known retail seasonality patterns.  
+- **promotion** allows evaluation of promotional effectiveness.  
+- **temperature** provides environmental context that may influence traffic during summer months.
+
+**Data Quality:**  
+The dataset is generally complete and clean. The only variable with missing values was **temperature**, which had **3 missing entries (~3.3%)**. We imputed these using the **mean temperature (87.68°F)**, which is reasonable given the small proportion of missing data and relatively stable summer temperatures. All other variables were fully observed with no inconsistencies or invalid entries.
+
+Categorical variables were carefully reviewed to ensure proper encoding for modeling. No outliers requiring removal were identified, as all numerical values fell within expected operational ranges for a retail environment.
+
+# Methodology and Analysis
+
+## Data Preparation
+
+Before modeling, we performed several preprocessing steps. We created a binary target variable, **high_revenue**, defined as revenue greater than the median value of $3,804. This threshold provides a balanced split for predicting high vs. low revenue days.
+
+We encoded categorical variables like `day_of_week`, `month`, `promotion`, and `weekend` numerically to support machine learning algorithms. We also engineered additional temporal features, including numerical day-of-week, month number, and week number extracted from the `date` variable to help capture seasonality and weekly behavioral patterns.
+
+The classification dataset was split into **75% training (67 days)** and **25% testing (23 days)** ordered by time to preserve temporal structure. For time series forecasting, the final 7 days were held out as a validation set, consistent with forecasting best practices.
+
+## Exploratory Data Analysis
+
+We conducted exploratory data analysis to understand revenue patterns, customer behavior, promotion effects, and temporal trends. The time series plot reveals clear weekly seasonality, with revenue consistently peaking on weekends. Weekdays show higher variability, suggesting opportunities for operational improvements.
+
+```{r eda-combined, fig.height=2.8, fig.cap="Revenue Patterns: Time Series and Day Type Distribution"}
+p1 <- ggplot(retail, aes(x = date, y = daily_revenue)) +
+  geom_line(color = "steelblue", size = 0.6) +
+  geom_point(aes(color = day_type), size = 1.5, alpha = 0.6) +
+  scale_color_manual(values = c("Weekday" = "darkorange", "Weekend" = "purple")) +
+  labs(x = "Date", y = "Revenue ($)", color = NULL) +
+  theme_minimal(base_size = 9) + theme(legend.position = "top")
+
+p2 <- ggplot(retail, aes(x = day_type, y = daily_revenue, fill = day_type)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("Weekday" = "lightblue", "Weekend" = "lightcoral")) +
+  labs(x = "Day Type", y = "Revenue ($)") +
+  theme_minimal(base_size = 9) + theme(legend.position = "none")
+
+grid.arrange(p1, p2, ncol = 2, widths = c(1.5, 1))
+```
+
+A boxplot comparison of weekend vs. weekday revenue shows a substantial difference between the two groups. A two-sample t-test confirmed that weekend revenue is **significantly higher** (t = `r round(t_test_result$statistic, 2)`, p < 0.001), with weekends generating, on average, 45% more revenue. This reinforces the importance of recognizing day-specific patterns in customer behavior.
+
+Customer traffic emerged as the strongest driver of revenue, with a correlation of **r = `r round(cor_customers, 3)`**. Daily customer counts ranged from 50 to 200 and closely tracked changes in daily revenue. In contrast, average transaction values remained relatively stable, suggesting that variations in customer volume—not spending per customer—explain most revenue fluctuations.
+
+These findings motivated the inclusion of weekend indicators, customer traffic, and promotional activity in the classification models, while weekly seasonal patterns supported the use of SARIMA and Prophet for forecasting.
+
+## Classification Modeling
+
+The binary classification task aimed to predict whether a given day would be high-revenue or low-revenue. We selected three modeling techniques to balance interpretability, predictive performance, and robustness:
+
+1. **Logistic Regression (Baseline Model)**  
+   Logistic Regression provides an interpretable baseline with coefficient-based insights into the influence of variables like customer traffic, weekend status, and promotions. It's widely used for business decision-making because it produces clear, explainable probability estimates.
+
+2. **Random Forest**  
+   Random Forest captures nonlinear relationships and interactions between predictors through its ensemble of decision trees. It can model complex patterns, handle mixed variable types, and provide feature importance measures.
+
+3. **XGBoost (Gradient Boosting)**  
+   XGBoost is a high-performance gradient boosting method designed to maximize prediction accuracy through sequential tree-based learning. It often performs well on small-to-medium structured datasets but requires careful tuning.
+
+```{r classification, include=FALSE}
+median_revenue <- median(retail_clean$daily_revenue)
+retail_class <- retail_clean %>%
+  mutate(high_revenue = ifelse(daily_revenue > median_revenue, 1, 0),
+         day_of_week_num = as.numeric(day_of_week), 
+         month_num = as.numeric(month),
+         week_num = week(date)) %>%
+  select(high_revenue, daily_customers, avg_transaction, temperature, 
+         promotion, weekend, day_of_week_num, month_num, week_num)
+
+set.seed(123)
+train_size <- floor(0.75 * nrow(retail_class))
+train_data <- retail_class[1:train_size, ]
+test_data <- retail_class[(train_size + 1):nrow(retail_class), ]
+
+calculate_metrics <- function(conf_matrix) {
+  TP <- conf_matrix["1","1"]; TN <- conf_matrix["0","0"]
+  FP <- conf_matrix["1","0"]; FN <- conf_matrix["0","1"]
+  tibble(Accuracy = (TP + TN) / sum(conf_matrix),
+         Precision = TP / (TP + FP), 
+         Recall = TP / (TP + FN),
+         F1 = 2 * (TP / (TP + FP) * TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)))
+}
+
+log_model <- glm(high_revenue ~ daily_customers + promotion + weekend,
+                 data = train_data, family = "binomial")
+log_preds <- ifelse(predict(log_model, test_data, type = "response") > 0.5, 1, 0)
+log_metrics <- calculate_metrics(table(Predicted = log_preds, Actual = test_data$high_revenue))
+
+rf_fit <- ranger(factor(high_revenue) ~ ., data = train_data, 
+                 importance = "impurity", probability = TRUE, seed = 123)
+rf_preds <- ifelse(predict(rf_fit, test_data)$predictions[,2] > 0.5, 1, 0)
+rf_metrics <- calculate_metrics(table(Predicted = rf_preds, Actual = test_data$high_revenue))
+
+train_matrix <- model.matrix(high_revenue ~ . -1, data = train_data)
+test_matrix <- model.matrix(high_revenue ~ . -1, data = test_data)
+xgb_fit <- xgboost(data = train_matrix, label = train_data$high_revenue,
+                   objective = "binary:logistic", nrounds = 100, verbose = 0)
+xgb_preds <- ifelse(predict(xgb_fit, test_matrix) > 0.5, 1, 0)
+xgb_metrics <- calculate_metrics(table(Predicted = xgb_preds, Actual = test_data$high_revenue))
+
+comparison_table <- tibble(
+  Model = c("Logistic Regression", "Random Forest", "XGBoost"),
+  Accuracy = c(log_metrics$Accuracy, rf_metrics$Accuracy, xgb_metrics$Accuracy),
+  Precision = c(log_metrics$Precision, rf_metrics$Precision, xgb_metrics$Precision),
+  Recall = c(log_metrics$Recall, rf_metrics$Recall, xgb_metrics$Recall),
+  F1 = c(log_metrics$F1, rf_metrics$F1, xgb_metrics$F1)
+) %>% mutate(across(where(is.numeric), ~round(.x * 100, 1)))
+```
+
+All models were trained on the same 75% training set and evaluated on the 25% test set using accuracy, precision, recall, and F1 score. These metrics measure overall correctness, ability to identify high-revenue days, and balance between false positives and false negatives.
+
+## Time Series Forecasting
+
+To predict store revenue for the upcoming week, we implemented two forecasting approaches:
+
+**SARIMA (Seasonal ARIMA):** SARIMA models work well for time series with clear seasonal patterns. Our dataset showed a strong 7-day weekly cycle, which made SARIMA with weekly seasonality a natural choice. We used the `auto.arima()` function with stepwise search disabled to ensure thorough model evaluation. The selected model captured level changes and weekly fluctuations effectively.
+
+**Prophet with External Regressors:** Prophet, developed by Meta, is a decomposable time series model designed for business forecasting applications. It automatically models trend and seasonality and is robust to missing data and outliers. Prophet allows custom regressors, so we included **weekend** and **promotion** variables to capture effects not fully encoded in the time component.
+
+```{r forecasting, include=FALSE}
+ts_data <- retail_clean %>%
+  select(date, daily_revenue, daily_customers, weekend, promotion) %>% arrange(date)
+train_ts <- ts_data[1:(nrow(ts_data) - 7), ]
+test_ts <- ts_data[(nrow(ts_data) - 6):nrow(ts_data), ]
+
+revenue_ts <- ts(train_ts$daily_revenue, frequency = 7)
+sarima_model <- auto.arima(revenue_ts, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+sarima_forecast <- forecast(sarima_model, h = 7)
+sarima_predictions <- tibble(date = test_ts$date, actual = test_ts$daily_revenue,
+                             forecast = as.numeric(sarima_forecast$mean))
+
+prophet_train <- train_ts %>% select(ds = date, y = daily_revenue, weekend, promotion)
+prophet_model <- prophet(yearly.seasonality = FALSE, weekly.seasonality = TRUE, 
+                        daily.seasonality = FALSE)
+prophet_model <- add_regressor(prophet_model, "weekend") %>% add_regressor("promotion")
+prophet_model <- fit.prophet(prophet_model, prophet_train)
+future <- make_future_dataframe(prophet_model, periods = nrow(test_ts), freq = "day") %>%
+  mutate(weekend = wday(ds) %in% c(1, 7), promotion = FALSE)
+prophet_forecast <- predict(prophet_model, future)
+prophet_predictions <- prophet_forecast %>%
+  filter(as.Date(ds) %in% test_ts$date) %>%
+  select(date = ds, forecast = yhat) %>% mutate(date = as.Date(date)) %>%
+  left_join(test_ts %>% select(date, actual = daily_revenue), by = "date")
+
+forecast_comparison <- tibble(
+  Model = c("SARIMA", "Prophet"),
+  RMSE = c(sqrt(mean((sarima_predictions$actual - sarima_predictions$forecast)^2)),
+           sqrt(mean((prophet_predictions$actual - prophet_predictions$forecast)^2))),
+  MAE = c(mean(abs(sarima_predictions$actual - sarima_predictions$forecast)),
+          mean(abs(prophet_predictions$actual - prophet_predictions$forecast)))
+) %>% mutate(across(where(is.numeric), ~round(.x, 2)))
+```
+
+Model performance was evaluated using standard forecasting metrics: **RMSE (Root Mean Squared Error)**, which penalizes large errors, and **MAE (Mean Absolute Error)**, which measures average error magnitude. The SARIMA model achieved lower RMSE and MAE values than Prophet, indicating better short-term predictive accuracy.
+
+# Results and Evaluation
+
+## Classification Performance
+
+We evaluated the three classification models on the 23-day test set using accuracy, precision, recall, and F1 score. Table 1 summarizes the results:
+
+```{r class-table}
+kable(comparison_table, booktabs = TRUE, caption = "Classification Model Results") %>%
+  kable_styling(latex_options = c("striped", "HOLD_position"), font_size = 9)
+```
+
+**Analysis:** Random Forest demonstrated the most balanced overall performance, achieving 82.6% accuracy with matched precision and recall (84.6% each). This consistency means the model is equally effective at identifying high-revenue days and avoiding false positives, making it reliable for day-to-day operational planning.
+
+Logistic Regression achieved the highest precision (90.9%), meaning when it predicts a high-revenue day, it's correct more than 9 out of 10 times. However, its lower recall indicates it misses some actual high-revenue days. This makes Logistic Regression suitable for risk-averse decisions, like minimizing overstaffing.
+
+XGBoost produced the lowest accuracy (73.9%) and F1 score, likely due to the limited dataset size (only 67 training observations). Gradient boosting methods typically require larger datasets to generalize well.
+
+**Recommendation:** Given its balanced performance and robustness, **Random Forest** is our recommended model for predicting high-revenue days to support staffing and scheduling decisions.
+
+## Forecasting Performance
+
+We tested two models—SARIMA and Prophet—on the final 7 days of data. Figure 1 shows the forecast comparison against actual revenue values, and Table 2 reports RMSE and MAE metrics.
+
+```{r forecast-results, fig.height=2.5, fig.cap="7-Day Forecast Comparison and Model Metrics"}
+combined_forecasts <- tibble(
+  date = test_ts$date,
+  Actual = test_ts$daily_revenue,
+  SARIMA = sarima_predictions$forecast,
+  Prophet = prophet_predictions$forecast
+) %>% pivot_longer(cols = c(Actual, SARIMA, Prophet), names_to = "Type", values_to = "Revenue")
+
+p1 <- ggplot(combined_forecasts, aes(x = date, y = Revenue, color = Type)) +
+  geom_line(size = 0.8) + geom_point(size = 2) +
+  scale_color_manual(values = c("Actual" = "orange", "SARIMA" = "purple", "Prophet" = "steelblue")) +
+  labs(x = "Date", y = "Revenue ($)", color = NULL) +
+  theme_minimal(base_size = 9) + theme(legend.position = "top")
+
+p2 <- tableGrob(forecast_comparison, rows = NULL, theme = ttheme_minimal(base_size = 8))
+
+grid.arrange(p1, p2, ncol = 2, widths = c(2, 1))
+```
+
+**Analysis:** SARIMA achieved the lowest forecasting error with an RMSE of $900 and MAE of $643, performing especially well at capturing weekly seasonality. An RMSE of $900 corresponds to approximately 23% of average daily revenue, which is acceptable for short-term retail forecasting.
+
+Prophet produced a slightly higher RMSE ($952) but remains competitive. Its strength lies in robustness to outliers and its ability to incorporate external regressors. Both models closely follow the upward revenue trend during weekends, reinforcing their validity.
+
+**Recommendation:** Because of its superior accuracy and ability to capture weekly patterns, **SARIMA** is recommended for weekly revenue forecasting, particularly for inventory ordering and short-term planning. Prophet should be retained as a secondary validation model.
+
+# Business Recommendations
+
+Based on our analytical results, we identified several strategic opportunities that can meaningfully improve operational efficiency, revenue performance, and inventory planning.
+
+## Key Insights
+
+Three primary revenue drivers emerged from the analysis. First, **customer traffic** is the strongest predictor of revenue (r = 0.86), meaning staffing and promotional decisions should prioritize expected customer volume. Second, the **weekend effect** is substantial: weekends generate 45% more revenue on average, a statistically significant difference. Third, **average transaction value** remains stable across days, suggesting that revenue variation stems from customer volume rather than spending behavior—creating opportunities for upselling and targeted sales strategies.
+
+Promotion analysis showed a **`r round(promo_lift, 1)`% revenue lift**, but results weren't statistically significant due to the small number of promotion days (n = 13). This highlights the need for a more systematic promotion strategy.
+
+## Strategic Recommendations
+
+### 1. Staffing Optimization
+
+The classification model can reliably predict high-revenue days, and customer traffic patterns consistently peak on weekends. We recommend **increasing weekend staffing by 30–40%** to align labor supply with the 49% higher customer volume observed. Conversely, maintain leaner staffing on historically low-traffic days like Monday and Friday.
+
+The predictive model can be integrated into weekly scheduling to identify upcoming high-revenue days and adjust staffing accordingly.  
+**Expected Impact:** 10–15% reduction in labor costs, improved customer service during peak periods, and fewer instances of overstaffing during slow days.
+
+### 2. Promotion Strategy Enhancement
+
+Given the modest but positive revenue lift observed during promotions, we recommend **increasing promotion frequency**, particularly on underperforming weekdays, to better stabilize weekly revenue and enhance foot traffic. At least **20% of days** should include promotions to enable statistically meaningful performance evaluation.
+
+The business should also experiment with different promotion types—percentage discounts, bundle offers, or loyalty incentives—and **track promotion-specific metrics** like customer acquisition, transaction size, and visit frequency.  
+**Expected Impact:** 15–20% increase in weekday revenue and improved understanding of promotion effectiveness.
+
+### 3. Inventory Management Optimization
+
+Forecasting results show that SARIMA provides accurate 7-day revenue predictions, enabling better alignment of inventory with expected demand. We recommend using SARIMA forecasts for **weekly inventory ordering** and increasing stock levels by **35–45% before weekends**, when revenue is predictably higher. Implementing safety stock based on forecast confidence intervals will help mitigate uncertainty.
+
+This approach reduces the risk of both stockouts (lost sales) and inventory surpluses (unnecessary holding costs).  
+**Expected Impact:** 20–25% reduction in stockouts and approximately 10% reduction in excess inventory.
+
+## Implementation Roadmap
+
+**Phase 1 (Weeks 1–4): Immediate Actions**
+
+- Deploy the Random Forest classification model to support next week's staffing decisions.  
+- Increase weekend staffing based on historical traffic trends.  
+- Launch targeted weekday promotions to improve low-performing days.
+
+**Phase 2 (Weeks 5–12): Integration and Testing**
+
+- Integrate SARIMA forecasts into weekly inventory ordering processes.  
+- Establish a structured promotion testing framework to determine effective promotion types.  
+- Train frontline staff on upselling strategies to increase average transaction value.
+
+**Phase 3 (Weeks 13–26): Optimization and Scaling**
+
+- Retrain models with newly collected data to improve accuracy.  
+- Conduct deeper analysis of promotion performance using expanded samples.  
+- Extend forecasting horizon to 14–30 days for enhanced financial planning.
+
+# Conclusion
+
+This project successfully developed and evaluated predictive models that address key operational challenges for the retail store. Using 90 days of daily sales data, the classification and forecasting models demonstrated strong performance, with Random Forest achieving **82.6% accuracy** in predicting high-revenue days and SARIMA obtaining an **RMSE of $900** for 7-day revenue forecasts.
+
+Several consistent insights emerged from the analysis. Weekend revenue was found to be **45% higher** than weekday revenue, a statistically significant and operationally important trend. Customer traffic showed the strongest correlation with revenue (**r = 0.86**), confirming its role as the primary revenue driver. Meanwhile, average transaction values remained stable, indicating that demand fluctuations—not spending levels—drive daily revenue variability.
+
+The business impact of these findings is substantial. Implementing the recommended strategies could deliver **10–15% reductions in labor costs**, **15–20% revenue increases on targeted weekdays**, and **20–25% reductions in stockouts** through better inventory alignment. These improvements translate directly into operational efficiency, enhanced customer experience, and stronger financial performance.
+
+Next steps include deploying the staffing optimization strategy guided by the classification model, expanding the promotion testing program to gather more robust insights, and continuing to collect data to refine and enhance forecasting accuracy. As additional data becomes available, the store can move toward richer customer-level and product-level analytics that support more sophisticated decision-making.
+
+Overall, this project demonstrates how data-driven approaches can provide measurable value in retail operations, creating a foundation for more advanced analytics capabilities in the future.
+
+# References
+
+\small
+1. Hyndman, R.J., & Athanasopoulos, G. (2021). *Forecasting: Principles and Practice* (3rd ed.). OTexts.
+2. James, G., et al. (2021). *An Introduction to Statistical Learning with R* (2nd ed.). Springer.
+3. Taylor, S.J., & Letham, B. (2018). Forecasting at Scale. *The American Statistician*, 72(1), 37-45.
+4. Chen, T., & Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System. *Proc. KDD*, 785-794.
+5. Wright, M.N., & Ziegler, A. (2017). ranger: Fast Random Forests. *J. Stat. Software*, 77(1), 1-17.
+
+# Appendix: Additional Visualizations and Code Repository
+
+**Code Repository:** All analysis code is available at:  
+[https://github.com/T-Oni-01/CAP6768-Data-Analytics-Fall-2025-Group-Project/blob/main/CAP6768%20Final%20Project_Completed.R](https://github.com/T-Oni-01/CAP6768-Data-Analytics-Fall-2025-Group-Project/blob/main/CAP6768%20Final%20Project_Completed.R)
+
+## Additional Exploratory Data Analysis
+```{r appendix-eda, fig.height=3.5, fig.cap="Detailed Revenue Time Series with Trend Analysis"}
+knitr::include_graphics("plots/1_time_series_revenue.png")
+```
+```{r appendix-day-analysis, fig.height=3, fig.cap="Revenue Distribution by Day Type and Day of Week"}
+knitr::include_graphics("plots/2_revenue_by_day_type.png")
+```
+```{r appendix-promo-temp, fig.height=3, fig.cap="Promotion Impact and Temperature Analysis"}
+knitr::include_graphics("plots/3_promotion_temperature_analysis.png")
+```
+```{r appendix-customer, fig.height=3, fig.cap="Customer Behavior Analysis"}
+knitr::include_graphics("plots/4_customer_behavior.png")
+```
+
+## Additional Classification Model Diagnostics
+```{r appendix-log-dist, fig.height=3, fig.cap="Logistic Regression Probability Distribution"}
+knitr::include_graphics("plots/5_logistic_probability_distribution.png")
+```
+```{r appendix-rf-importance, fig.height=3, fig.cap="Random Forest Feature Importance Rankings"}
+knitr::include_graphics("plots/6_rf_feature_importance.png")
+```
+```{r appendix-xgb-roc, fig.height=3, fig.cap="XGBoost ROC Curve and AUC Score"}
+knitr::include_graphics("plots/7_xgboost_roc_curve.png")
+```
+```{r appendix-class-compare, fig.height=3, fig.cap="Classification Model Performance Comparison"}
+knitr::include_graphics("plots/8_classification_model_comparison.png")
+```
+
+## Additional Forecasting Model Diagnostics
+```{r appendix-sarima-detail, fig.height=3, fig.cap="SARIMA Forecast with 95% Confidence Intervals"}
+knitr::include_graphics("plots/9_sarima_forecast.png")
+```
+```{r appendix-prophet-detail, fig.height=3, fig.cap="Prophet Forecast with 95% Confidence Intervals"}
+knitr::include_graphics("plots/10_prophet_forecast.png")
+```
+```{r appendix-forecast-compare, fig.height=3, fig.cap="Forecast Model Performance Metrics Comparison"}
+knitr::include_graphics("plots/11_forecast_model_comparison.png")
+```
+```{r appendix-combined, fig.height=3, fig.cap="Combined Forecast Comparison: SARIMA vs Prophet"}
+knitr::include_graphics("plots/12_combined_forecasts.png")
+```
+
